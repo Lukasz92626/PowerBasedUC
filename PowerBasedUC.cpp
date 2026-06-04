@@ -6,48 +6,47 @@
 
 ILOSTLBEGIN
 
+// Structure storing all input data for the thermal unit commitment problem
 struct ThermalFleet
 {
-    int horizon;
-    int unitCount;
+    int horizon;    // Number of time periods
+    int unitCount;  // Number of generators
 
-    // Costs
-    std::vector<double> marginalCost;
-    std::vector<double> fixedCost;
-    std::vector<double> startupCost;
-    std::vector<double> shutdownCost;
+    // Costs parameters
+    std::vector<double> marginalCost;       // Variable production cost [$/MWh]
+    std::vector<double> fixedCost;          // Fixed on/off cost [$/h]
+    std::vector<double> startupCost;        // Startup cost [$]
+    std::vector<double> shutdownCost;       // Shutdown cost [$]
 
     // Power limits
-    std::vector<double> minimumOutput;
-    std::vector<double> maximumOutput;
+    std::vector<double> minimumOutput;      // Minimum generation level
+    std::vector<double> maximumOutput;      // Maximum generation level
 
-    // Ramping
-    std::vector<double> rampUpLimit;
-    std::vector<double> rampDownLimit;
+    // Ramping limits
+    std::vector<double> rampUpLimit;        // Maximum ramp-up per period
+    std::vector<double> rampDownLimit;      // Maximum ramp-down per period
 
     // Startup / shutdown capability
-    std::vector<double> startupCap;
-    std::vector<double> shutdownCap;
-
-    //std::vector<double> startupTrajectory;
-    //std::vector<double> shutdownTrajectory;
+    std::vector<double> startupCap;         // Max output during startup
+    std::vector<double> shutdownCap;        // Max output during shutdown
 
     // Minimum up/down
-    std::vector<int> minOnline;
-    std::vector<int> minOffline;
+    std::vector<int> minOnline;             // Minimum ON time
+    std::vector<int> minOffline;            // Minimum OFF time
 
     // Initial conditions
-    std::vector<int> initialCommitment;
-    std::vector<double> initialProduction;
+    std::vector<int> initialCommitment;     // Initial on/off status
+    std::vector<double> initialProduction;  // Initial generation
 
-    // Demand
+    // System demand
     std::vector<double> load;
 
     // Reserve requirements
-    std::vector<double> reserveUp;
-    std::vector<double> reserveDown;
+    std::vector<double> reserveUp;          // Upward reserve requirement
+    std::vector<double> reserveDown;        // Downward reserve requirement
 };
 
+// Creates test data instance
 ThermalFleet buildFleet()
 {
     ThermalFleet f;
@@ -68,9 +67,6 @@ ThermalFleet buildFleet()
 
     f.startupCap = { 220, 150, 100 };
     f.shutdownCap = { 220, 150, 100 };
-
-    //f.startupTrajectory = { 100, 70, 40 };
-    //f.shutdownTrajectory = { 100, 60, 30 };
 
     f.minOnline = { 2, 2, 1 };
     f.minOffline = { 2, 1, 1 };
@@ -121,55 +117,26 @@ int main()
 
         IloModel model(env);
 
-        const int G = fleet.unitCount;
-        const int T = fleet.horizon;
+        const int G = fleet.unitCount;  // number of generators
+        const int T = fleet.horizon;    // number of time periods
 
         // -------------------------------------------------
         // VARIABLES
         // -------------------------------------------------
 
-        std::vector<std::vector<IloBoolVar>> online(
-            G,
-            std::vector<IloBoolVar>(T)
-        );
+        // Binary commitment variables
+        std::vector<std::vector<IloBoolVar>> online(G, std::vector<IloBoolVar>(T));
+        std::vector<std::vector<IloBoolVar>> startup(G, std::vector<IloBoolVar>(T));
+        std::vector<std::vector<IloBoolVar>> shutdown(G, std::vector<IloBoolVar>(T));
 
-        std::vector<std::vector<IloBoolVar>> startup(
-            G,
-            std::vector<IloBoolVar>(T)
-        );
+        // Continuous variables
+        std::vector<std::vector<IloNumVar>> aboveMinimum(G, std::vector<IloNumVar>(T));
+        std::vector<std::vector<IloNumVar>> totalOutput(G, std::vector<IloNumVar>(T));
+        std::vector<std::vector<IloNumVar>> producedEnergy(G, std::vector<IloNumVar>(T));
+        std::vector<std::vector<IloNumVar>> reservePositive(G, std::vector<IloNumVar>(T));
+        std::vector<std::vector<IloNumVar>> reserveNegative(G, std::vector<IloNumVar>(T));
 
-        std::vector<std::vector<IloBoolVar>> shutdown(
-            G,
-            std::vector<IloBoolVar>(T)
-        );
-
-        std::vector<std::vector<IloNumVar>> aboveMinimum(
-            G,
-            std::vector<IloNumVar>(T)
-        );
-
-        std::vector<std::vector<IloNumVar>> totalOutput(
-            G,
-            std::vector<IloNumVar>(T)
-        );
-
-        std::vector<std::vector<IloNumVar>> producedEnergy(
-            G,
-            std::vector<IloNumVar>(T)
-        );
-
-        std::vector<std::vector<IloNumVar>> reservePositive(
-            G,
-            std::vector<IloNumVar>(T)
-        );
-
-        std::vector<std::vector<IloNumVar>> reserveNegative(
-            G,
-            std::vector<IloNumVar>(T)
-        );
-
-
-
+        // Variable initialization
         for (int g = 0; g < G; ++g)
         {
             for (int t = 0; t < T; ++t)
@@ -178,6 +145,7 @@ int main()
                 startup[g][t] = IloBoolVar(env);
                 shutdown[g][t] = IloBoolVar(env);
 
+                // Power above minimum output
                 aboveMinimum[g][t] = IloNumVar(
                         env,
                         0.0,
@@ -185,6 +153,7 @@ int main()
                         ILOFLOAT
                     );
 
+                // Total power output
                 totalOutput[g][t] = IloNumVar(
                         env,
                         0.0,
@@ -192,16 +161,11 @@ int main()
                         ILOFLOAT
                     );
 
-                producedEnergy[g][t] =
-                    IloNumVar(
-                        env,
-                        0.0,
-                        IloInfinity,
-                        ILOFLOAT
-                    );
+                // Produced energy (integrated power)
+                producedEnergy[g][t] = IloNumVar(env, 0.0, IloInfinity, ILOFLOAT);
 
+                // Reserve variables
                 reservePositive[g][t] = IloNumVar(env, 0.0, IloInfinity, ILOFLOAT);
-
                 reserveNegative[g][t] = IloNumVar(env, 0.0, IloInfinity, ILOFLOAT);
             }
         }
@@ -209,6 +173,7 @@ int main()
         // -------------------------------------------------
         // (16) OBJECTIVE
         // -------------------------------------------------
+        // Minimize total operating cost
 
         IloExpr objective(env);
 
@@ -216,14 +181,13 @@ int main()
         {
             for (int t = 0; t < T; ++t)
             {
+                // Variable production cost
                 objective += fleet.marginalCost[g] * producedEnergy[g][t];
 
+                // Fixed ON cost
                 objective += fleet.fixedCost[g] * online[g][t];
 
-                //objective += fleet.startupCost[g] * startup[g][t];
-
-                //objective += fleet.shutdownCost[g] * shutdown[g][t];
-
+                // Effective startup/shutdown costs (including fixed cost)
                 double CSU_eff = fleet.startupCost[g] + fleet.fixedCost[g] * 1;
                 double CSD_eff = fleet.shutdownCost[g] + fleet.fixedCost[g] * 1;
 
@@ -237,6 +201,7 @@ int main()
         // -------------------------------------------------
         // (7) LOGIC EQUATIONS
         // -------------------------------------------------
+        // Commitment state transitions
 
         for (int g = 0; g < G; ++g)
         {
@@ -248,6 +213,7 @@ int main()
                 );
             }
 
+            // Initial condition
             model.add(online[g][0] - fleet.initialCommitment[g]
                 ==
                 startup[g][0] - shutdown[g][0]
@@ -330,6 +296,7 @@ int main()
         // -------------------------------------------------
         // (15) ENERGY EQUATIONS
         // -------------------------------------------------
+        // Trapezoidal approximation
 
         for (int g = 0; g < G; ++g)
         {
@@ -400,6 +367,21 @@ int main()
                 <=
                 fleet.rampDownLimit[g] * online[g][0] + fleet.shutdownCap[g] * shutdown[g][0]
             );
+        }
+
+        // -------------------------------------------------
+        // (AUX) RESERVE RAMP LIMIT (UP)
+        // -------------------------------------------------
+        // Reserve cannot exceed ramping capability
+
+        for (int g = 0; g < G; ++g)
+        {
+            for (int t = 0; t < T; ++t)
+            {
+                model.add(
+                    reservePositive[g][t] <= fleet.rampUpLimit[g] * online[g][t]
+                );
+            }
         }
 
         // -------------------------------------------------
