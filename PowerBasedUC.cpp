@@ -216,13 +216,19 @@ int main()
         {
             for (int t = 0; t < T; ++t)
             {
-                objective += fleet.marginalCost[g] * totalOutput[g][t];
+                objective += fleet.marginalCost[g] * producedEnergy[g][t];
 
                 objective += fleet.fixedCost[g] * online[g][t];
 
-                objective += fleet.startupCost[g] * startup[g][t];
+                //objective += fleet.startupCost[g] * startup[g][t];
 
-                objective += fleet.shutdownCost[g] * shutdown[g][t];
+                //objective += fleet.shutdownCost[g] * shutdown[g][t];
+
+                double CSU_eff = fleet.startupCost[g] + fleet.fixedCost[g] * 1;
+                double CSD_eff = fleet.shutdownCost[g] + fleet.fixedCost[g] * 1;
+
+                objective += CSU_eff * startup[g][t];
+                objective += CSD_eff * shutdown[g][t];
             }
         }
 
