@@ -408,19 +408,14 @@ int main()
 
         for (int g = 0; g < G; ++g)
         {
-            for (int t = 0; t < T; ++t)
+            for (int t = 0; t < T - 1; ++t)
             {
                 model.add(
-                    totalOutput[g][t] + reservePositive[g][t]
+                    aboveMinimum[g][t] + reservePositive[g][t]
                     <=
-                    fleet.maximumOutput[g] * online[g][t] -
-                    (fleet.maximumOutput[g] - fleet.startupCap[g]) * startup[g][t]
-                );
-
-                model.add(
-                    reservePositive[g][t]
-                    <=
-                    fleet.maximumOutput[g] - totalOutput[g][t]
+                    (fleet.maximumOutput[g] - fleet.minimumOutput[g]) * online[g][t]
+                    - (fleet.maximumOutput[g] - fleet.shutdownCap[g]) * shutdown[g][t + 1]
+                    + (fleet.startupCap[g] - fleet.minimumOutput[g]) * startup[g][t + 1]
                 );
             }
         }
