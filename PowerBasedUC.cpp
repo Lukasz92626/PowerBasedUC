@@ -1,4 +1,4 @@
-#include <ilcplex/ilocplex.h>
+﻿#include <ilcplex/ilocplex.h>
 
 #include <vector>
 #include <iostream>
@@ -207,7 +207,7 @@ int main()
         }
 
         // -------------------------------------------------
-        // OBJECTIVE
+        // (16) OBJECTIVE
         // -------------------------------------------------
 
         IloExpr objective(env);
@@ -235,7 +235,7 @@ int main()
         model.add(IloMinimize(env, objective));
 
         // -------------------------------------------------
-        // LOGIC EQUATIONS
+        // (7) LOGIC EQUATIONS
         // -------------------------------------------------
 
         for (int g = 0; g < G; ++g)
@@ -255,7 +255,7 @@ int main()
         }
 
         // -------------------------------------------------
-        // MINIMUM UP TIME
+        // (8) MINIMUM UP TIME
         // -------------------------------------------------
 
         for (int g = 0; g < G; ++g)
@@ -276,7 +276,7 @@ int main()
         }
 
         // -------------------------------------------------
-        // MINIMUM DOWN TIME
+        // (9) MINIMUM DOWN TIME
         // -------------------------------------------------
 
         for (int g = 0; g < G; ++g)
@@ -297,7 +297,7 @@ int main()
         }
 
         // -------------------------------------------------
-        // GENERATION LIMITS
+        // (6) GENERATION LIMITS
         // -------------------------------------------------
 
         for (int g = 0; g < G; ++g)
@@ -313,7 +313,7 @@ int main()
         }
 
         // -------------------------------------------------
-        // TOTAL POWER
+        // (14) TOTAL POWER
         // -------------------------------------------------
 
         for (int g = 0; g < G; ++g)
@@ -328,7 +328,7 @@ int main()
         }
 
         // -------------------------------------------------
-        // ENERGY EQUATIONS
+        // (15) ENERGY EQUATIONS
         // -------------------------------------------------
 
         for (int g = 0; g < G; ++g)
@@ -355,7 +355,7 @@ int main()
         }
 
         // -------------------------------------------------
-        // RAMP-UP
+        // (27) RAMP-UP
         // -------------------------------------------------
 
         for (int g = 0; g < G; ++g)
@@ -379,7 +379,7 @@ int main()
         }
 
         // -------------------------------------------------
-        // RAMP-DOWN
+        // (28) RAMP-DOWN
         // -------------------------------------------------
 
         for (int g = 0; g < G; ++g)
@@ -403,7 +403,7 @@ int main()
         }
 
         // -------------------------------------------------
-        // UP RESERVE CAPABILITY
+        // (26) UP RESERVE CAPABILITY
         // -------------------------------------------------
 
         for (int g = 0; g < G; ++g)
@@ -420,14 +420,26 @@ int main()
             }
         }
 
+        int t_last = T - 1;
+
+        for (int g = 0; g < G; ++g)
+        {
+            model.add(
+                aboveMinimum[g][t_last] + reservePositive[g][t_last]
+                <=
+                (fleet.maximumOutput[g] - fleet.minimumOutput[g]) * online[g][t_last]
+            );
+        }
+
         // -------------------------------------------------
-        // DOWN RESERVE CAPABILITY
+        // (27) (28) DOWN RESERVE CAPABILITY
         // -------------------------------------------------
 
         for (int g = 0; g < G; ++g)
         {
             for (int t = 0; t < T; ++t)
             {
+                // (28)
                 model.add(
                     reserveNegative[g][t]
                     <=
@@ -435,6 +447,7 @@ int main()
                     ( fleet.shutdownCap[g] - fleet.minimumOutput[g]) * shutdown[g][t]
                 );
 
+                // (27)
                 model.add(
                     reserveNegative[g][t]
                     <=
@@ -444,7 +457,7 @@ int main()
         }
 
         // -------------------------------------------------
-        // SYSTEM DEMAND BALANCE
+        // (19) SYSTEM DEMAND BALANCE
         // -------------------------------------------------
 
         for (int t = 0; t < T; ++t)
@@ -462,7 +475,7 @@ int main()
         }
 
         // -------------------------------------------------
-        // UP RESERVE REQUIREMENT
+        // (20) UP RESERVE REQUIREMENT
         // -------------------------------------------------
 
         for (int t = 0; t < T; ++t)
@@ -480,7 +493,7 @@ int main()
         }
 
         // -------------------------------------------------
-        // DOWN RESERVE REQUIREMENT
+        // (21) DOWN RESERVE REQUIREMENT
         // -------------------------------------------------
 
         for (int t = 0; t < T; ++t)
