@@ -1,0 +1,66 @@
+# ========================
+# IDE: Visual Studio 2022
+# ========================
+# Pliki z ustawieniami u¿ytkownika i stanem IDE - NIE NALE¯Y ICH COMMITOWAÆ [citation:1][citation:7]
+.vs/
+*.user
+*.suo
+*.sln.docstates
+
+# Pamiêæ podrêczna IntelliSense dla C++
+ipch/
+
+# ========================
+# Kompilacja: C/C++
+# ========================
+# Tymczasowe pliki obiektowe i wynikowe [citation:1][citation:9]
+[Dd]ebug/
+[Rr]elease/
+x64/
+[Bb]in/
+[Oo]bj/
+out/
+
+# Pliki konsolidacji i debugowania [citation:7][citation:9]
+*.obj
+*.exe
+*.ilk
+*.pdb
+
+# ========================
+# System budowania: CMake
+# ========================
+# CMake generuje te pliki - nie s¹ potrzebne w repozytorium [citation:2][citation:9]
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+compile_commands.json
+
+# Tylko dla Visual Studio - niestandardowe ustawienia CMake mog¹ byæ inne dla ka¿dego dewelopera [citation:2]
+CMakeSettings.json
+/*/CMakeUserPresets.json
+
+# ========================
+# CPLEX / Concert
+# ========================
+# Te katalogi s¹ zwykle wskazywane przez link_directories() w CMakeLists.txt [citation:3]
+# a nie przechowywane bezpoœrednio w repozytorium.
+# Poni¿sze wpisy s¹ opcjonalne – dodaj je, jeœli przypadkowo skopiowa³eœ biblioteki do swojego projektu.
+# lib/
+# debug/
+# release/
+
+# ========================
+# System operacyjny oraz edytory
+# ========================
+# macOS [citation:2]
+.DS_Store
+
+# Linux
+*~
+
+# Pliki tymczasowe edytorów tekstu [citation:2]
+*.orig
+*.rej
+*.swp
