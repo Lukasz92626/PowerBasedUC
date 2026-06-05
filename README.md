@@ -2,7 +2,7 @@
  
 Implementacja w C++ ścisłego sformułowania MIP przedstawionego w artykule:
 
-> **Morales-España, G., Gentile, C., & Ramos, A. (2015)**  
+> **Germán Morales-España, Claudio Gentile & Andres Ramos (2015)**  
 > [*Tight MIP formulations of the power-based unit commitment problem.*](https://link.springer.com/article/10.1007/s00291-015-0400-4?utm_source=chatgpt.com#auth-Germ_n-Morales_Espa_a-Aff1)
 > OR Spectrum, 37(4), 929–950. DOI: [10.1007/s00291-015-0400-4]
 
@@ -117,7 +117,7 @@ Cała logika zawarta jest w `PowerBasedUC.cpp`:
    cmake --build build --config Release
    ```
  
-4. Uruchom solver:
+4. Solver uruchamiamy za pomocą:
    ```bat
    build\Release\PowerBasedUC.exe
    ```
@@ -181,11 +181,3 @@ fleet.reserveDown     // wymagana rezerwa w dół w każdym okresie [MW]
 ```
  
 Dla jednostek wolnorozruchowych funkcje `makeStartupTraj(Pmin, SUD)` i `makeShutdownTraj(Pmin, SDD)` generują liniową rampę od 0 do $\underline{P}$ i z powrotem.
- 
----
- 
-## Literatura
- 
-1. Morales-España, G., Gentile, C., & Ramos, A. (2015). Tight MIP formulations of the power-based unit commitment problem. *OR Spectrum*, 37(4), 929–950.
-2. Morales-España, G., Latorre, J. M., & Ramos, A. (2013). Tight and compact MILP formulation of start-up and shut-down ramping in unit commitment. *IEEE Trans. Power Syst.*, 28(2), 1288–1296.
-3. Rajan, D., & Takriti, S. (2005). Minimum up/down polytopes of the unit commitment problem with start-up costs. *IBM Research Report RC23628*.
