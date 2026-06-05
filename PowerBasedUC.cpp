@@ -3,6 +3,7 @@
 #include <vector>
 #include <iostream>
 #include <iomanip>
+#include <algorithm>
 
 ILOSTLBEGIN
 
@@ -11,6 +12,8 @@ struct ThermalFleet
 {
     int horizon;    // Number of time periods
     int unitCount;  // Number of generators
+
+    std::vector<bool> isQuickStart;
 
     // Costs parameters
     std::vector<double> marginalCost;       // Variable production cost [$/MWh]
@@ -30,21 +33,52 @@ struct ThermalFleet
     std::vector<double> startupCap;         // Max output during startup
     std::vector<double> shutdownCap;        // Max output during shutdown
 
+    // Slow-start: duration of startup/shutdown process
+    std::vector<int> startupDuration;       // SUD_g [h]
+    std::vector<int> shutdownDuration;      // SDD_g [h]
+
+    // Slow-start: power trajectory during startup PSU_i
+    // Outer vector: generator g; inner vector: SUD_g values
+    std::vector<std::vector<double>> startupTraj;   // PSU_{g,i}
+
+    // Slow-start: power trajectory during shutdown PSD_i
+    std::vector<std::vector<double>> shutdownTraj; // PSD_{g,i}
+
     // Minimum up/down
     std::vector<int> minOnline;             // Minimum ON time
     std::vector<int> minOffline;            // Minimum OFF time
 
     // Initial conditions
-    std::vector<int> initialCommitment;     // Initial on/off status
+    std::vector<int> initialStatus;         // Initial on/off status
     std::vector<double> initialProduction;  // Initial generation
 
     // System demand
-    std::vector<double> load;
+    std::vector<double> load;               // D_t [MW]
 
     // Reserve requirements
     std::vector<double> reserveUp;          // Upward reserve requirement
     std::vector<double> reserveDown;        // Downward reserve requirement
 };
+
+// Build a linear startup power trajectory for slow-start units.
+static std::vector<double> makeStartupTraj(double Pmin, int SUD)
+{
+    std::vector<double> traj(SUD);
+    for (int i = 0; i < SUD; ++i)
+        traj[i] = Pmin * (i + 1) / static_cast<double>(SUD + 1);
+    return traj;
+}
+
+// Build a linear shutdown power trajectory for slow-start units.
+static std::vector<double> makeShutdownTraj(double Pmin, int SDD)
+{
+    // PSD_i  for i = 1 … SDD+1  where PSD_1 = P̲, PSD_{SDD+1} = 0
+    // We store i = 1 … SDD+1 (size SDD+1) so indexing matches eq.(12).
+    std::vector<double> traj(SDD + 1);
+    for (int i = 0; i <= SDD; ++i)
+        traj[i] = Pmin * (SDD - i) / static_cast<double>(SDD);
+    return traj;
+}
 
 // Creates test data instance
 ThermalFleet buildFleet()
@@ -53,6 +87,8 @@ ThermalFleet buildFleet()
 
     f.horizon = 6;
     f.unitCount = 3;
+
+    f.isQuickStart = { true, true, false };
 
     f.marginalCost = { 18, 24, 40 };
     f.fixedCost = { 120, 80, 30 };
@@ -68,41 +104,22 @@ ThermalFleet buildFleet()
     f.startupCap = { 220, 150, 100 };
     f.shutdownCap = { 220, 150, 100 };
 
+    f.startupDuration = { 1, 1, 2 };
+    f.shutdownDuration = { 1, 1, 2 };
+
+    f.startupTraj = { {}, {}, makeStartupTraj(40.0, 2) };
+    f.shutdownTraj = { {}, {}, makeShutdownTraj(40.0, 2) };
+
     f.minOnline = { 2, 2, 1 };
     f.minOffline = { 2, 1, 1 };
 
-    f.initialCommitment = { 0, 0, 0 };
+    f.initialStatus = { 0, 0, 0 };
     f.initialProduction = { 0, 0, 0 };
 
-    f.load =
-    {
-        180,
-        420,
-        520,
-        470,
-        260,
-        150
-    };
+    f.load = { 180, 420, 520, 470, 260, 150 };
 
-    f.reserveUp =
-    {
-        40,
-        50,
-        60,
-        50,
-        30,
-        20
-    };
-
-    f.reserveDown =
-    {
-        40,
-        50,
-        60,
-        50,
-        30,
-        20
-    };
+    f.reserveUp = { 40, 50, 60, 50, 30, 20 };
+    f.reserveDown = { 40, 50, 60, 50, 30, 20 };
 
     return f;
 }
@@ -133,8 +150,8 @@ int main()
         std::vector<std::vector<IloNumVar>> aboveMinimum(G, std::vector<IloNumVar>(T));
         std::vector<std::vector<IloNumVar>> totalOutput(G, std::vector<IloNumVar>(T));
         std::vector<std::vector<IloNumVar>> producedEnergy(G, std::vector<IloNumVar>(T));
-        std::vector<std::vector<IloNumVar>> reservePositive(G, std::vector<IloNumVar>(T));
-        std::vector<std::vector<IloNumVar>> reserveNegative(G, std::vector<IloNumVar>(T));
+        std::vector<std::vector<IloNumVar>> reservePos(G, std::vector<IloNumVar>(T));
+        std::vector<std::vector<IloNumVar>> reserveNeg(G, std::vector<IloNumVar>(T));
 
         // Variable initialization
         for (int g = 0; g < G; ++g)
@@ -146,27 +163,17 @@ int main()
                 shutdown[g][t] = IloBoolVar(env);
 
                 // Power above minimum output
-                aboveMinimum[g][t] = IloNumVar(
-                        env,
-                        0.0,
-                        fleet.maximumOutput[g] - fleet.minimumOutput[g],
-                        ILOFLOAT
-                    );
-
+                aboveMinimum[g][t] = IloNumVar(env, 0.0, fleet.maximumOutput[g] - fleet.minimumOutput[g], ILOFLOAT);
+                
                 // Total power output
-                totalOutput[g][t] = IloNumVar(
-                        env,
-                        0.0,
-                        fleet.maximumOutput[g],
-                        ILOFLOAT
-                    );
+                totalOutput[g][t] = IloNumVar(env, 0.0, fleet.maximumOutput[g], ILOFLOAT);
 
                 // Produced energy (integrated power)
                 producedEnergy[g][t] = IloNumVar(env, 0.0, IloInfinity, ILOFLOAT);
 
                 // Reserve variables
-                reservePositive[g][t] = IloNumVar(env, 0.0, IloInfinity, ILOFLOAT);
-                reserveNegative[g][t] = IloNumVar(env, 0.0, IloInfinity, ILOFLOAT);
+                reservePos[g][t] = IloNumVar(env, 0.0, IloInfinity, ILOFLOAT);
+                reserveNeg[g][t] = IloNumVar(env, 0.0, IloInfinity, ILOFLOAT);
             }
         }
 
@@ -179,6 +186,13 @@ int main()
 
         for (int g = 0; g < G; ++g)
         {
+            int SUD = fleet.startupDuration[g];
+            int SDD = fleet.shutdownDuration[g];
+
+            // Effective startup/shutdown costs (including fixed cost)
+            double CSU_eff = fleet.startupCost[g] + fleet.fixedCost[g] * SUD;
+            double CSD_eff = fleet.shutdownCost[g] + fleet.fixedCost[g] * SDD;
+
             for (int t = 0; t < T; ++t)
             {
                 // Variable production cost
@@ -186,10 +200,6 @@ int main()
 
                 // Fixed ON cost
                 objective += fleet.fixedCost[g] * online[g][t];
-
-                // Effective startup/shutdown costs (including fixed cost)
-                double CSU_eff = fleet.startupCost[g] + fleet.fixedCost[g] * 1;
-                double CSD_eff = fleet.shutdownCost[g] + fleet.fixedCost[g] * 1;
 
                 objective += CSU_eff * startup[g][t];
                 objective += CSD_eff * shutdown[g][t];
@@ -205,19 +215,13 @@ int main()
 
         for (int g = 0; g < G; ++g)
         {
-            for (int t = 1; t < T; ++t)
-            {
-                model.add(online[g][t] - online[g][t - 1]
-                    ==
-                    startup[g][t] - shutdown[g][t]
-                );
-            }
+            // t = 0: use initialStatus to determine u_{-1}
+            int u0_prev = (fleet.initialStatus[g] > 0) ? 1 : 0;
+            model.add(online[g][0] - u0_prev == startup[g][0] - shutdown[g][0]);
 
-            // Initial condition
-            model.add(online[g][0] - fleet.initialCommitment[g]
-                ==
-                startup[g][0] - shutdown[g][0]
-            );
+            for (int t = 1; t < T; ++t) {
+                model.add(online[g][t] - online[g][t - 1] == startup[g][t] - shutdown[g][t]);
+            }
         }
 
         // -------------------------------------------------
@@ -226,17 +230,30 @@ int main()
 
         for (int g = 0; g < G; ++g)
         {
-            for (int t = fleet.minOnline[g] - 1; t < T; ++t)
+            int TU = fleet.minOnline[g];
+
+            // Initial commitment constraint for units already online
+            if (fleet.initialStatus[g] > 0)
+            {
+                int hoursOn = fleet.initialStatus[g];
+                int mustRemainOn = std::max(0, TU - hoursOn);
+
+                for (int t = 0; t < std::min(mustRemainOn, T); ++t) {
+                    model.add(online[g][t] == 1);
+                }
+            }
+
+            // Rolling minimum-uptime constraint
+            for (int t = TU - 1; t < T; ++t)
             {
                 IloExpr lhs(env);
 
-                for (int i = t - fleet.minOnline[g] + 1; i <= t; ++i)
+                for (int i = t - TU + 1; i <= t; ++i)
                 {
                     lhs += startup[g][i];
                 }
 
                 model.add(lhs <= online[g][t]);
-
                 lhs.end();
             }
         }
@@ -247,199 +264,214 @@ int main()
 
         for (int g = 0; g < G; ++g)
         {
-            for (int t = fleet.minOffline[g] - 1; t < T; ++t)
+            int TD = fleet.minOffline[g];
+
+            // Initial commitment constraint for units already offline
+            if (fleet.initialStatus[g] < 0)
+            {
+                int hoursOff = -fleet.initialStatus[g];
+                int mustRemainOff = std::max(0, TD - hoursOff);
+
+                for (int t = 0; t < std::min(mustRemainOff, T); ++t)
+                    model.add(online[g][t] == 0);
+            }
+
+            // Rolling minimum-downtime constraint
+            for (int t = TD - 1; t < T; ++t)
             {
                 IloExpr lhs(env);
 
-                for (int i = t - fleet.minOffline[g] + 1; i <= t; ++i)
+                for (int i = t - TD + 1; i <= t; ++i)
                 {
                     lhs += shutdown[g][i];
                 }
 
                 model.add(lhs <= 1 - online[g][t]);
-
                 lhs.end();
             }
         }
 
         // -------------------------------------------------
-        // (6) GENERATION LIMITS
+        // (4) (5) (6) GENERATION LIMITS WITH SU/SD CAPABILITIES
         // -------------------------------------------------
 
         for (int g = 0; g < G; ++g)
         {
-            for (int t = 0; t < T; ++t)
+            double Pmax = fleet.maximumOutput[g];
+            double Pmin = fleet.minimumOutput[g];
+            double SU = fleet.startupCap[g];
+            double SD = fleet.shutdownCap[g];
+
+            for (int t = 0; t < T - 1; ++t)
             {
+                // (4)
                 model.add(
-                    aboveMinimum[g][t]
+                    aboveMinimum[g][t] + reservePos[g][t]
                     <=
-                    (fleet.maximumOutput[g] - fleet.minimumOutput[g]) * online[g][t]
+                    (Pmax - Pmin) * online[g][t]
+                    - (Pmax - SD) * shutdown[g][t + 1]
+                    + (SU - Pmin) * startup[g][t + 1]
                 );
             }
+
+            // (5)
+            model.add(
+                aboveMinimum[g][T - 1] + reservePos[g][T - 1]
+                <=
+                (Pmax - Pmin) * online[g][T - 1]
+            );
         }
 
-        // -------------------------------------------------
-        // (14) TOTAL POWER
-        // -------------------------------------------------
-
+        // -------------------------------------------------------------------
+        // DOWN-RESERVE CAPABILITY (eq. 26 lower part + shutdown correction)
+        // -------------------------------------------------------------------
         for (int g = 0; g < G; ++g)
         {
+            double Pmin = fleet.minimumOutput[g];
+            double SD = fleet.shutdownCap[g];
+
             for (int t = 0; t < T; ++t)
             {
-                model.add(totalOutput[g][t]
-                    ==
-                    fleet.minimumOutput[g] * online[g][t] + aboveMinimum[g][t]
+                // With shutdown correction
+                model.add(
+                    reserveNeg[g][t]
+                    <=
+                    aboveMinimum[g][t] - (SD - Pmin) * shutdown[g][t]
                 );
+
+                // General: reserve cannot exceed power above minimum
+                model.add(reserveNeg[g][t] <= aboveMinimum[g][t]);
             }
         }
 
-        // -------------------------------------------------
-        // (15) ENERGY EQUATIONS
-        // -------------------------------------------------
-        // Trapezoidal approximation
+        // -------------------------------------------------------------------
+        // (14) (29) TOTAL POWER for QUICK-START units
+        // -------------------------------------------------------------------
+        for (int g = 0; g < G; ++g)
+        {
+            double Pmin = fleet.minimumOutput[g];
 
+            for (int t = 0; t < T; ++t)
+            {
+                IloExpr rhs(env);
+
+                // Common term
+                rhs += Pmin * online[g][t];
+                if (t + 1 < T) {
+                    rhs += Pmin * startup[g][t + 1];
+                }
+
+                // Controllable part above minimum
+                rhs += aboveMinimum[g][t];
+
+                if (!fleet.isQuickStart[g])
+                {
+                    int SUD = fleet.startupDuration[g];
+                    int SDD = fleet.shutdownDuration[g];
+
+                    // Startup trajectory term (iii) in eq. (12):
+                    for (int i = 1; i <= SUD; ++i)
+                    {
+                        int vIdx = t - i + SUD + 2 - 1; // convert to 0-based
+                        double PSU_i = fleet.startupTraj[g][i - 1];
+                        if (vIdx >= 0 && vIdx < T)
+                            rhs += PSU_i * startup[g][vIdx];
+                    }
+
+                    // Shutdown trajectory term (ii) in eq. (12):
+                    for (int i = 2; i <= SDD + 1; ++i)
+                    {
+                        int wIdx = t - i + 2 - 1; // convert to 0-based
+                        double PSD_i = fleet.shutdownTraj[g][i - 1]; // PSD_i
+                        if (wIdx >= 0 && wIdx < T)
+                            rhs += PSD_i * shutdown[g][wIdx];
+                    }
+                }
+
+                model.add(totalOutput[g][t] == rhs);
+                rhs.end();
+            }
+        }
+
+        // -------------------------------------------------------------------
+        // (15) (31) ENERGY — trapezoidal rule
+        // -------------------------------------------------------------------
         for (int g = 0; g < G; ++g)
         {
             for (int t = 0; t < T; ++t)
             {
                 IloExpr avg(env);
-
                 avg += totalOutput[g][t];
 
                 if (t > 0)
-                {
                     avg += totalOutput[g][t - 1];
-                }
                 else
-                {
                     avg += fleet.initialProduction[g];
-                }
 
                 model.add(producedEnergy[g][t] == 0.5 * avg);
-
                 avg.end();
             }
         }
 
-        // -------------------------------------------------
-        // (27) RAMP-UP
-        // -------------------------------------------------
-
+        // -------------------------------------------------------------------
+        // (27) RAMP-UP WITH RESERVES
+        // -------------------------------------------------------------------
         for (int g = 0; g < G; ++g)
         {
+            double Pmin = fleet.minimumOutput[g];
+            double RU = fleet.rampUpLimit[g];
+            double SU = fleet.startupCap[g];
+
+            // previous aboveMinimum derived from initial production
+            int u0_prev = (fleet.initialStatus[g] > 0) ? 1 : 0;
+            double p0_prev = std::max(0.0, fleet.initialProduction[g] - Pmin * u0_prev);
+
+            model.add(
+                aboveMinimum[g][0] + reservePos[g][0] - p0_prev
+                <=
+                RU * u0_prev + (SU - Pmin) * startup[g][0]
+            );
+
             for (int t = 1; t < T; ++t)
             {
-                model.add(totalOutput[g][t] - totalOutput[g][t - 1]
+                model.add(
+                    aboveMinimum[g][t] + reservePos[g][t] - aboveMinimum[g][t - 1]
                     <=
-                    fleet.rampUpLimit[g] * online[g][t - 1] + fleet.startupCap[g] * startup[g][t]
+                    RU * online[g][t - 1] + (SU - Pmin) * startup[g][t]
                 );
             }
         }
 
+        // -------------------------------------------------------------------
+        // (28) RAMP-DOWN WITH RESERVES
+        // -------------------------------------------------------------------
         for (int g = 0; g < G; ++g)
         {
+            double Pmin = fleet.minimumOutput[g];
+            double RD = fleet.rampDownLimit[g];
+            double SD = fleet.shutdownCap[g];
+
+            int u0_prev = (fleet.initialStatus[g] > 0) ? 1 : 0;
+            double p0_prev = std::max(0.0, fleet.initialProduction[g] - Pmin * u0_prev);
+
             model.add(
-                totalOutput[g][0] - fleet.initialProduction[g]
+                p0_prev - (aboveMinimum[g][0] - reserveNeg[g][0])
                 <=
-                fleet.rampUpLimit[g] * fleet.initialCommitment[g] + fleet.startupCap[g] * startup[g][0]
+                RD * online[g][0] + (SD - Pmin) * shutdown[g][0]
             );
-        }
 
-        // -------------------------------------------------
-        // (28) RAMP-DOWN
-        // -------------------------------------------------
-
-        for (int g = 0; g < G; ++g)
-        {
             for (int t = 1; t < T; ++t)
             {
-                model.add(totalOutput[g][t - 1]  - totalOutput[g][t]
-                    <=
-                    fleet.rampDownLimit[g] * online[g][t] + fleet.shutdownCap[g] * shutdown[g][t]
-                );
-            }
-        }
-
-        for (int g = 0; g < G; ++g)
-        {
-            model.add(
-                fleet.initialProduction[g] - totalOutput[g][0]
-                <=
-                fleet.rampDownLimit[g] * online[g][0] + fleet.shutdownCap[g] * shutdown[g][0]
-            );
-        }
-
-        // -------------------------------------------------
-        // (AUX) RESERVE RAMP LIMIT (UP)
-        // -------------------------------------------------
-        // Reserve cannot exceed ramping capability
-
-        for (int g = 0; g < G; ++g)
-        {
-            for (int t = 0; t < T; ++t)
-            {
                 model.add(
-                    reservePositive[g][t] <= fleet.rampUpLimit[g] * online[g][t]
+                    aboveMinimum[g][t - 1] - (aboveMinimum[g][t] - reserveNeg[g][t])
+                    <=
+                    RD * online[g][t] + (SD - Pmin) * shutdown[g][t]
                 );
             }
         }
 
         // -------------------------------------------------
-        // (26) UP RESERVE CAPABILITY
-        // -------------------------------------------------
-
-        for (int g = 0; g < G; ++g)
-        {
-            for (int t = 0; t < T - 1; ++t)
-            {
-                model.add(
-                    aboveMinimum[g][t] + reservePositive[g][t]
-                    <=
-                    (fleet.maximumOutput[g] - fleet.minimumOutput[g]) * online[g][t]
-                    - (fleet.maximumOutput[g] - fleet.shutdownCap[g]) * shutdown[g][t + 1]
-                    + (fleet.startupCap[g] - fleet.minimumOutput[g]) * startup[g][t + 1]
-                );
-            }
-        }
-
-        int t_last = T - 1;
-
-        for (int g = 0; g < G; ++g)
-        {
-            model.add(
-                aboveMinimum[g][t_last] + reservePositive[g][t_last]
-                <=
-                (fleet.maximumOutput[g] - fleet.minimumOutput[g]) * online[g][t_last]
-            );
-        }
-
-        // -------------------------------------------------
-        // (27) (28) DOWN RESERVE CAPABILITY
-        // -------------------------------------------------
-
-        for (int g = 0; g < G; ++g)
-        {
-            for (int t = 0; t < T; ++t)
-            {
-                // (28)
-                model.add(
-                    reserveNegative[g][t]
-                    <=
-                    totalOutput[g][t] - fleet.minimumOutput[g] * online[g][t] -
-                    ( fleet.shutdownCap[g] - fleet.minimumOutput[g]) * shutdown[g][t]
-                );
-
-                // (27)
-                model.add(
-                    reserveNegative[g][t]
-                    <=
-                    totalOutput[g][t] - fleet.minimumOutput[g] * online[g][t]
-                );
-            }
-        }
-
-        // -------------------------------------------------
-        // (19) SYSTEM DEMAND BALANCE
+        // (19) SYSTEM POWER DEMAND BALANCE
         // -------------------------------------------------
 
         for (int t = 0; t < T; ++t)
@@ -452,7 +484,6 @@ int main()
             }
 
             model.add(generation >= fleet.load[t]);
-
             generation.end();
         }
 
@@ -462,16 +493,15 @@ int main()
 
         for (int t = 0; t < T; ++t)
         {
-            IloExpr reserve(env);
+            IloExpr res(env);
 
             for (int g = 0; g < G; ++g)
             {
-                reserve += reservePositive[g][t];
+                res += reservePos[g][t];
             }
 
-            model.add(reserve >= fleet.reserveUp[t]);
-
-            reserve.end();
+            model.add(res >= fleet.reserveUp[t]);
+            res.end();
         }
 
         // -------------------------------------------------
@@ -480,16 +510,15 @@ int main()
 
         for (int t = 0; t < T; ++t)
         {
-            IloExpr reserve(env);
+            IloExpr res(env);
 
             for (int g = 0; g < G; ++g)
             {
-                reserve += reserveNegative[g][t];
+                res += reserveNeg[g][t];
             }
 
-            model.add(reserve >= fleet.reserveDown[t]);
-
-            reserve.end();
+            model.add(res >= fleet.reserveDown[t]);
+            res.end();
         }
 
         // -------------------------------------------------
@@ -524,35 +553,20 @@ int main()
             std::cout << "Generator " << g << "\n";
             std::cout << "============================\n";
 
-            std::cout
-                << "t"
-                << "\tON"
-                << "\tSU"
-                << "\tSD"
-                << "\tP"
-                << "\tRU"
-                << "\tRD"
-                << "\tE\n";
+            std::cout << "t" << "\tON" << "\tSU" << "\tSD" << "\tp_abs" << "\tp_tot" << "\tr+" << "\tr-" << "\tE\n";
 
             for (int t = 0; t < T; ++t)
             {
                 std::cout
-                    << t
-                    << "\t"
-                    << solver.getValue(online[g][t])
-                    << "\t"
-                    << solver.getValue(startup[g][t])
-                    << "\t"
-                    << solver.getValue(shutdown[g][t])
-                    << "\t"
-                    << solver.getValue(totalOutput[g][t])
-                    << "\t"
-                    << solver.getValue(reservePositive[g][t])
-                    << "\t"
-                    << solver.getValue(reserveNegative[g][t])
-                    << "\t"
-                    << solver.getValue(producedEnergy[g][t])
-                    << "\n";
+                    << t << "\t"
+                    << solver.getValue(online[g][t]) << "\t"
+                    << solver.getValue(startup[g][t]) << "\t"
+                    << solver.getValue(shutdown[g][t]) << "\t"
+                    << solver.getValue(aboveMinimum[g][t]) << "\t"
+                    << solver.getValue(totalOutput[g][t]) << "\t"
+                    << solver.getValue(reservePos[g][t]) << "\t"
+                    << solver.getValue(reserveNeg[g][t]) << "\t"
+                    << solver.getValue(producedEnergy[g][t]) << "\n";
             }
 
             std::cout << std::endl;
