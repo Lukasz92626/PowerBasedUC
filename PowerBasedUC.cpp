@@ -529,6 +529,7 @@ int main()
 
         solver.setParam(IloCplex::Param::Threads, 1);
 
+        double solveStart = solver.getCplexTime();
         if (!solver.solve())
         {
             std::cout << "No feasible solution\n";
@@ -538,39 +539,157 @@ int main()
             return 1;
         }
 
+        double solveEnd = solver.getCplexTime();
+
         // -------------------------------------------------
         // RESULTS
         // -------------------------------------------------
 
         std::cout << std::fixed << std::setprecision(2);
 
-        std::cout << "\n";
-        std::cout << "Objective = " << solver.getObjValue() << "\n\n";
+        // helpers
+        auto sep = [](char c, int n) { return std::string(n, c); };
+        auto line = [&]() { std::cout << sep('-', 72) << "\n"; };
+        auto dline = [&]() { std::cout << sep('=', 72) << "\n"; };
 
+        // SOLVER SUMMARY
+        dline();
+        std::cout << "  SOLVER SUMMARY\n";
+        dline();
+        std::cout << "  Optimal objective :  " << solver.getObjValue() << " $\n";
+        std::cout << "  Best bound        :  " << solver.getBestObjValue() << " $\n";
+        std::cout << "  MIP gap           :  " << solver.getMIPRelativeGap() * 100.0 << " %\n";
+        std::cout << "  Solve time        :  " << (solveEnd - solveStart) << " s\n";
+        std::cout << "  B&B nodes         :  " << solver.getNnodes() << "\n";
+        std::cout << "  Constraints       :  " << solver.getNrows() << "\n";
+        std::cout << "  Variables         :  " << solver.getNcols() << "\n";
+        dline();
+        std::cout << "\n";
+
+        // PER-GENERATOR SCHEDULE
         for (int g = 0; g < G; ++g)
         {
-            std::cout << "============================\n";
-            std::cout << "Generator " << g << "\n";
-            std::cout << "============================\n";
+            dline();
+            std::cout << "  GENERATOR " << g
+                << "  [" << (fleet.isQuickStart[g] ? "quick-start" : "slow-start") << "]"
+                << "   P_min=" << fleet.minimumOutput[g] << " MW"
+                << "  P_max=" << fleet.maximumOutput[g] << " MW"
+                << "  c_var=" << fleet.marginalCost[g] << " $/MWh\n";
+            dline();
 
-            std::cout << "t" << "\tON" << "\tSU" << "\tSD" << "\tp_abs" << "\tp_tot" << "\tr+" << "\tr-" << "\tE\n";
+            // column header
+            std::cout
+                << std::left
+                << std::setw(4) << "t"
+                << std::setw(14) << "status"
+                << std::right
+                << std::setw(10) << "p_abs[MW]"
+                << std::setw(10) << "p_tot[MW]"
+                << std::setw(9) << "r+[MW]"
+                << std::setw(9) << "r-[MW]"
+                << std::setw(10) << "E[MWh]"
+                << "\n";
+            line();
 
             for (int t = 0; t < T; ++t)
             {
+                bool isOn = solver.getValue(online[g][t]) > 0.5;
+                bool isSU = solver.getValue(startup[g][t]) > 0.5;
+                bool isSD = solver.getValue(shutdown[g][t]) > 0.5;
+
+                // build a compact status string, e.g. "ON+SU" or "OFF"
+                std::string status;
+                if (isOn)  status = "ON";
+                else       status = "OFF";
+                if (isSU)  status += "+SU";
+                if (isSD)  status += "+SD";
+
                 std::cout
-                    << t << "\t"
-                    << solver.getValue(online[g][t]) << "\t"
-                    << solver.getValue(startup[g][t]) << "\t"
-                    << solver.getValue(shutdown[g][t]) << "\t"
-                    << solver.getValue(aboveMinimum[g][t]) << "\t"
-                    << solver.getValue(totalOutput[g][t]) << "\t"
-                    << solver.getValue(reservePos[g][t]) << "\t"
-                    << solver.getValue(reserveNeg[g][t]) << "\t"
-                    << solver.getValue(producedEnergy[g][t]) << "\n";
+                    << std::left
+                    << std::setw(4) << t
+                    << std::setw(14) << status
+                    << std::right
+                    << std::setw(10) << solver.getValue(aboveMinimum[g][t])
+                    << std::setw(10) << solver.getValue(totalOutput[g][t])
+                    << std::setw(9) << solver.getValue(reservePos[g][t])
+                    << std::setw(9) << solver.getValue(reserveNeg[g][t])
+                    << std::setw(10) << solver.getValue(producedEnergy[g][t])
+                    << "\n";
             }
 
-            std::cout << std::endl;
+            // cost breakdown for this generator
+            int SUD = fleet.startupDuration[g];
+            int SDD = fleet.shutdownDuration[g];
+            double CSU_eff = fleet.startupCost[g] + fleet.fixedCost[g] * SUD;
+            double CSD_eff = fleet.shutdownCost[g] + fleet.fixedCost[g] * SDD;
+
+            double costNL = 0, costSU = 0, costSD = 0, costVar = 0;
+            for (int t = 0; t < T; ++t)
+            {
+                costNL += fleet.fixedCost[g] * solver.getValue(online[g][t]);
+                costSU += CSU_eff * solver.getValue(startup[g][t]);
+                costSD += CSD_eff * solver.getValue(shutdown[g][t]);
+                costVar += fleet.marginalCost[g] * solver.getValue(producedEnergy[g][t]);
+            }
+            line();
+            std::cout << "  Cost breakdown:  "
+                << "no-load=" << costNL
+                << "  startup=" << costSU
+                << "  shutdown=" << costSD
+                << "  variable=" << costVar
+                << "  total=" << (costNL + costSU + costSD + costVar)
+                << " $\n";
+            dline();
+            std::cout << "\n";
         }
+
+        // SYSTEM BALANCE CHECK
+        dline();
+        std::cout << "  SYSTEM BALANCE CHECK\n";
+        dline();
+        std::cout
+            << std::left << std::setw(4) << "t"
+            << std::right << std::setw(10) << "demand[MW]"
+            << std::setw(11) << "gen[MW]"
+            << std::setw(8) << "slack"
+            << std::setw(9) << "r+req"
+            << std::setw(9) << "sum_r+"
+            << std::setw(9) << "r-req"
+            << std::setw(9) << "sum_r-"
+            << "\n";
+        line();
+
+        bool allOk = true;
+        for (int t = 0; t < T; ++t)
+        {
+            double gen = 0, sumRp = 0, sumRn = 0;
+            for (int g = 0; g < G; ++g)
+            {
+                gen += solver.getValue(totalOutput[g][t]);
+                sumRp += solver.getValue(reservePos[g][t]);
+                sumRn += solver.getValue(reserveNeg[g][t]);
+            }
+            double slack = gen - fleet.load[t];
+            bool   ok = (slack >= -1e-4)
+                && (sumRp >= fleet.reserveUp[t] - 1e-4)
+                && (sumRn >= fleet.reserveDown[t] - 1e-4);
+            if (!ok) allOk = false;
+
+            std::cout
+                << std::left << std::setw(4) << t
+                << std::right << std::setw(10) << fleet.load[t]
+                << std::setw(11) << gen
+                << std::setw(8) << (ok ? "OK" : "FAIL")
+                << std::setw(9) << fleet.reserveUp[t]
+                << std::setw(9) << sumRp
+                << std::setw(9) << fleet.reserveDown[t]
+                << std::setw(9) << sumRn
+                << "\n";
+        }
+        line();
+        std::cout << "  Overall: " << (allOk ? "ALL CONSTRAINTS SATISFIED" : "WARNING — constraint violation detected") << "\n";
+        dline();
+        std::cout << "\n";
 
         objective.end();
     }
